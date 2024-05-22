@@ -128,6 +128,7 @@ co = cohere.Client(COHERE_KEY)
 def get_relevant_question_context(query, 
                                   limit = 15, 
                                   include_document_in_retrieval = True, 
+                                  distance_threshold = 0.6,
                                   priority_SOP = None):
     if not priority_SOP:
         relevant_questions = questions_collection.query(
@@ -142,8 +143,7 @@ def get_relevant_question_context(query,
             include=["documents","distances","metadatas"],
             where = {'Filename': priority_SOP}
         )
-    
-    distance_threshold = 0.6
+        
     questions = []
     metadatas = []
     for dist_lst, document_lst, meta_lst in list(zip(relevant_questions['distances'], relevant_questions['documents'], relevant_questions['metadatas'])):
@@ -206,8 +206,9 @@ def get_relevant_question_context(query,
         FN_DOC = [f"CONTEXT_SOURCE_FILE:{file}\nCONTENT:{docu}\n" for file,docu in list(zip(reranked_filenames, reranked_documents))]
         context_data = "\n".join(FN_DOC)
         context_str = f"""
-        You may use the following SOP Documents to answer the question:
+        You may use the following SOP Documents to answer the question. In the case that the answer is not explicitly mentioned, perform another function call to search for a more relevant answer.
         
+        Relevant SOP Documents : 
         {context_data}
         """
         #os.write(1,f"Relevant Context\n\n{context_str}".encode())
