@@ -2,6 +2,7 @@ __import__('pysqlite3')
 import sys
 sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
 
+import os
 import streamlit as st
 import openai
 import json
@@ -124,12 +125,23 @@ OpenAIClient = openai.OpenAI(
 #### DEFINE FUNCTION CALLS ##############
 import cohere
 co = cohere.Client(COHERE_KEY)
-def get_relevant_question_context(query, limit = 10, include_document_in_retrieval = False):
-    relevant_questions = questions_collection.query(
-        query_texts = [query],
-        n_results = limit,
-        include=["documents","distances","metadatas"]
-    )
+def get_relevant_question_context(query, 
+                                  limit = 15, 
+                                  include_document_in_retrieval = True, 
+                                  priority_SOP = None):
+    if not priority_SOP:
+        relevant_questions = questions_collection.query(
+            query_texts = [query],
+            n_results = limit,
+            include=["documents","distances","metadatas"]
+        )
+    else:
+        relevant_questions = questions_collection.query(
+            query_texts = [query],
+            n_results = limit,
+            include=["documents","distances","metadatas"],
+            where = {'Filename': priority_SOP}
+        )
     
     distance_threshold = 0.6
     questions = []
@@ -137,9 +149,13 @@ def get_relevant_question_context(query, limit = 10, include_document_in_retriev
     for dist_lst, document_lst, meta_lst in list(zip(relevant_questions['distances'], relevant_questions['documents'], relevant_questions['metadatas'])):
         for dst, doc, meta in list(zip(dist_lst, document_lst, meta_lst)):
             if dst <= distance_threshold:
-                questions.append(doc) 
-                metadatas.append(meta)
-        
+                if doc not in questions:
+                    questions.append(doc) 
+                    metadatas.append(meta)
+                    
+                    #os.write(1,b"Relevant Questions:\n")
+                    #os.write(1,f"DISTANCE : {dst}\nCONTENT : {doc}".encode())
+                
     if include_document_in_retrieval:
         docu_context = document_collection.query(
             query_texts = [query],
@@ -149,9 +165,14 @@ def get_relevant_question_context(query, limit = 10, include_document_in_retriev
     
         for docu_dst, doc_text, meta_text in list(zip(docu_context['distances'], docu_context['documents'], docu_context['metadatas'])):
             for dst, doc, meta in list(zip(docu_dst, doc_text, meta_text)):
-                if dst <= 0.3:
+                #os.write(1,b"\n\nSimilar Raw Documents:\n")
+                #os.write(1,f"DISTANCE : {dst}\nCONTENT : {doc}".encode())
+                if dst <= 0.8:
                     questions.append(doc)
                     metadatas.append(meta)
+
+                    #os.write(1,b"\n\nRelevant Raw Documents:\n")
+                    #os.write(1,f"DISTANCE : {dst}\nCONTENT : {doc}".encode())
                     
     if questions:
         index2doc = {doc : i for i,doc in enumerate(questions)}
@@ -161,6 +182,7 @@ def get_relevant_question_context(query, limit = 10, include_document_in_retriev
         relevant_metadatas = [metadatas[i] for i in questions_indexes] 
         
         unique_metadatas = [dict(t) for t in {tuple(d.items()) for d in relevant_metadatas}]
+        print(unique_metadatas)
         filenames = [f"{mt['Filename']}-{mt['Section Name']}" for mt in unique_metadatas]
         
         relevant_raw_documents = []
@@ -187,9 +209,8 @@ def get_relevant_question_context(query, limit = 10, include_document_in_retriev
         You may use the following SOP Documents to answer the question:
         
         {context_data}
-
-        If multiple possible answers are found, ask clarifying questions to the user.
         """
+        #os.write(1,f"Relevant Context\n\n{context_str}".encode())
         return context_str
         
     else:
@@ -218,7 +239,33 @@ SIGNATURE_get_relevant_question_context = {
     
 }
 
-tools = [SIGNATURE_get_relevant_question_context]
+def get_AYNTK_documents(query, limit = 15, include_document_in_retrieval = True, priority_SOP = "AYNTK"):
+    return get_relevant_question_context(query, limit = 15, include_document_in_retrieval = True, priority_SOP = "AYNTK")
+    
+SIGNATURE_get_AYNTK_context = {
+    "type" : "function",
+    "function" : {
+        "name" : "get_AYNTK_documents",
+        "description" : "First function to use if in need of context to answer a query. Finds answers within the AYNTK document.",
+        "parameters" : {
+            "type" : "object",
+            "properties" : {
+                "query" : {
+                    "type" : "string",
+                    "description" : "Query passed by the user to the chatbot"
+                },
+                "limit" : {
+                    "type" : "integer",
+                    "description" : "Total number of SOPs to retrieve from vector database"
+                }
+            },
+            "required" : ["query"],
+        }
+    }
+    
+}
+
+tools = [SIGNATURE_get_relevant_question_context, SIGNATURE_get_AYNTK_context]
 
 #######################################
 
@@ -228,7 +275,7 @@ import tiktoken
 def num_tokens_from_messages(messages):
     """Returns the number of tokens used by a list of messages."""
     try:
-        encoding = tiktoken.encoding_for_model("gpt-3.5-turbo")
+        encoding = tiktoken.encoding_for_model("gpt-4")
     except KeyError:
         encoding = tiktoken.get_encoding("cl100k_base")
 
@@ -248,27 +295,32 @@ def num_tokens_from_messages(messages):
 ############### PROMPTS ###############
 
 system_prompt = """
-As a travel agent assistant for Major Travel, your role involves strictly adhering to the agency's standard operating procedures (SOPs) and internal tasks to ensure high-quality service delivery.
-Your primary objective is to support senior colleagues in identifying the most relevant references based on company SOPs and assisting them with their daily tasks.
-As such you are expected to undestand the language of people working in travel agencies (e.g. they may use the word "who do we use" to "which supplier/vendor do we use"), try to anticipate these types of
-vague questioning.
+Role : As a travel agent assistant for Major Travel, your role involves strictly adhering to the agency's standard operating procedures (SOPs) and assisting your coworkers with their queries about it.
 
-If the question is populated by pronous, utilize a new query such that query is able to understand the context of pronouns better for document retrieval.
-One example is : "Who do we use for Iceland Excursions" can be improved by transforming it to "Who does Major Travel use for Iceland Excursions".
+Response Rules:
+1. Utilize the provided context given to you in identifying which SOP is relevant to their query through document retrieval. 
+2. Respond in a friendly and professional tone - much like a travel agent or bank assistant giving answers to questions asked of them.
+3. If need be, perform multiple function calls to answer the question
+4. If you deem necessary, try interpreting questions by making them less vague. Take for example an instance where the use of "who do we use" can also be understood as "Who does Major Travel use".
 
-Answer ONLY with the facts extracted from the ChromaDB. Do not generate answers that don't use the sources provided to you.
-If asking a clarifying question to the user would help, ask the question.
+Retrictions:
+1. Answer only with facts extracted from the context provided to you. Do not generate answers that don't use the sources provided to you.
+2. Try to infer some details but not the extent that you are already using information not provided to you by the SOPs. Only do so for instances like infering acronyms and vague wording.
+3. Avoid mentioning everything any information irrelevant to your coworkers' questions - try to be concise while remaining informative.
 
-To help in monitoring performance, include the CONTEXT_SOURCE_FILE of the relevant context extracted in the form of a header. 
-Use the following response template if you were able to answer the user's question:
+Guidelines for responses:
+1. In the case that the prompt was too vague, ask clarifying questions.
+2. If you think you have a similar context to the prompt - even if not exactly the same - ask if thats what they meant. 
+3. If no similar context was found from your initial search, ask clarifying questions that would help you answer them better or help you identify what to look for.
+4. If you still dont know the answer, respond by saying that you were unable to find a good answer but inform them which SOP document you found most similar.
+5. In the instance that the question is incomprehensible, respond accordingly by saying that you only have knowledge about the SOPs.
+6. If doing function calls, run get_AYNTK_documents first to check for relevant context. If no relevant context is found within AYNTK, thats the only time you can run get_relevant_question_context
 
+Response Template:
+<start of template>
 Relevant Context found in {CONTEXT_SOURCE_FILE}\n
 {PROMPT_RESPONSE}
- 
-If still cannot anwer a question after clarifying questions, use the standard response template: "Sorry I was not able to find the answer but similar contents may be found in the SOP : {CONTEXT_SOURCE_FILE}
-
-In the instance that the question is incomprehensible, use the template: "Sorry I was not able to understand the question, can you rephrase the question?"
-Lastly, respond in a bubbly tone and replicate how a travel agent may communicate with a customer.
+</end of template>
 """
 ########################################
 st.title("📝 Major Travel Chatbot UAT Platform")
@@ -311,7 +363,7 @@ if StreamlitUser:
                 # Get Response
                 response = OpenAIClient.chat.completions.create(
                     messages=messages,
-                    model="gpt-3.5-turbo",
+                    model="gpt-4",
                     temperature=0,
                     n=1,
                     seed = 82598,
@@ -325,7 +377,8 @@ if StreamlitUser:
                 
                 if tool_calls:
                     available_fxns = {
-                        "get_relevant_question_context" : get_relevant_question_context
+                        "get_relevant_question_context" : get_relevant_question_context,
+                        "get_AYNTK_documents" : get_AYNTK_documents
                     }
                     
                     messages.append(response_message),
@@ -348,7 +401,7 @@ if StreamlitUser:
                         )
                 context_enhanced_response = OpenAIClient.chat.completions.create(
                     messages=messages,
-                    model="gpt-3.5-turbo",
+                    model="gpt-4",
                     seed = 82598,
                     temperature=0,
                     n=1,
