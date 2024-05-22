@@ -240,8 +240,8 @@ SIGNATURE_get_relevant_question_context = {
     
 }
 
-def get_AYNTK_documents(query, limit = 15, include_document_in_retrieval = True, priority_SOP = "AYNTK"):
-    return get_relevant_question_context(query, limit = 15, include_document_in_retrieval = True, priority_SOP = "AYNTK")
+def get_AYNTK_documents(query, limit = 15, include_document_in_retrieval = True, distance_threshold = 0.6, priority_SOP = "AYNTK"):
+    return get_relevant_question_context(query, limit = 15, include_document_in_retrieval = True, distance_threshold = 0.6, priority_SOP = "AYNTK")
     
 SIGNATURE_get_AYNTK_context = {
     "type" : "function",
