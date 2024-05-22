@@ -199,7 +199,7 @@ def get_relevant_question_context(query,
         relevant_raw_documents = list(set(relevant_raw_documents))
         doc2filename = {docu:file for docu, file in list(zip(relevant_raw_documents, filenames))}
         
-        doc_rerank = co.rerank(query=query, documents=relevant_raw_documents, top_n=3, model='rerank-english-v3.0', return_documents=True)   
+        doc_rerank = co.rerank(query=query, documents=relevant_raw_documents, top_n=5, model='rerank-english-v3.0', return_documents=True)   
         reranked_documents = [str(r.document.text) for r in doc_rerank.results] 
         reranked_filenames = [doc2filename[rrd] for rrd in reranked_documents]
         
